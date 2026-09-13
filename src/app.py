@@ -27,6 +27,20 @@ from providers import get_llm_provider
 
 load_dotenv()
 
+MAX_REACT_ITERATIONS = 5
+
+REACT_STOP_INSTRUCTIONS = """
+SAU KHI NHẬN OBSERVATION:
+- Nếu TẤT CẢ yêu cầu trong câu hỏi gốc ĐÃ được xử lý, trả Final Answer: <tóm tắt> NGAY.
+- Nếu observation là NOT_FOUND hoặc ERROR, trả Final Answer thông báo lỗi, KHÔNG gọi lại tool.
+
+QUY TẮC CHỐNG LẶP:
+1. KHÔNG gọi lại tool với cùng tham số đã gọi.
+2. Observation SUCCESS -> tổng hợp Final Answer ngay nếu không còn yêu cầu khác.
+3. Câu hỏi 1 yêu cầu -> 1 tool call là đủ.
+4. Câu hỏi 2 yêu cầu -> tối đa 2 tool calls khác nhau.
+"""
+
 def load_test_cases():
     """Tải danh sách 5 test cases từ config/test_cases.json hoặc config/test_cases.example.json"""
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -71,14 +85,19 @@ def run_react_agent(user_query: str, provider, mcp_server: MCPAcademicServer) ->
     step = 0
     trace_logs = []
     tools_list = mcp_server.list_tools()
+    react_context = user_query
     
-    while step < MAX_ITERATIONS:
+    while step < MAX_REACT_ITERATIONS:
         step += 1
         step_start_time = time.time()
-        print(f"\n--- 🔄 Vòng lặp ReAct Loop (Step {step}/{MAX_ITERATIONS}) ---")
+        print(f"\n--- 🔄 Vòng lặp ReAct Loop (Step {step}/{MAX_REACT_ITERATIONS}) ---")
         
         # Gọi LLM với Native Tool Calling Specs
-        llm_response = provider.generate_with_tools(user_query, tools_list, system_prompt=REACT_AGENT_SYSTEM_PROMPT)
+        llm_response = provider.generate_with_tools(
+            react_context,
+            tools_list,
+            system_prompt=f"{REACT_AGENT_SYSTEM_PROMPT}\n{REACT_STOP_INSTRUCTIONS}"
+        )
         latency_ms = round((time.time() - step_start_time) * 1000, 2)
         
         thought = llm_response.get("thought", "Đang suy luận...")
@@ -145,19 +164,15 @@ def run_react_agent(user_query: str, provider, mcp_server: MCPAcademicServer) ->
                 "latency_ms": latency_ms
             })
             
-            # Kết thúc vòng lặp sau khi hoàn tất Observation và xuất Final Answer
-            print(f"🧠 [Thought]: Đã nhận được dữ liệu từ MCP Server. Tổng hợp kết quả phản hồi.")
-            print(f"🏁 [Final Answer]: {final_answer}")
-            
-            trace_logs.append({
-                "step": step + 1,
-                "query": user_query,
-                "action_type": "FINAL_ANSWER",
-                "thought": "Tổng hợp kết quả từ MCP Server thành công.",
-                "output": final_answer,
-                "latency_ms": 10.0
-            })
-            break
+            # Đưa Observation vào ngữ cảnh để LLM tiếp tục các yêu cầu còn lại.
+            react_context = (
+                f"{user_query}\n\n"
+                f"Tool vừa gọi: {tool_name}\n"
+                f"Observation: {json.dumps(obs_data, ensure_ascii=False)}\n\n"
+                "Nếu câu hỏi còn yêu cầu chưa hoàn thành, hãy tiếp tục gọi tool tiếp theo. "
+                "Chỉ trả lời trực tiếp khi mọi yêu cầu đã hoàn tất."
+            )
+            print("🧠 [Thought]: Đã nhận Observation. Xác định có cần xử lý thêm hay trả Final Answer.")
 
     return trace_logs
 
@@ -214,6 +229,8 @@ if __name__ == "__main__":
                 logs = run_react_agent(tc["question"], provider, mcp_server)
                 all_traces.extend(logs)
                 completed_count += 1
+            if tc is not tests[-1]:
+                time.sleep(8)
                 
         print(f"\n==================================================")
         print(f"📊 [KẾT QUẢ TEST SUITE]: Đã thực thi {completed_count}/{len(tests)} Test Cases | {todo_count} Test Cases đang chờ điền câu hỏi (TODO)")

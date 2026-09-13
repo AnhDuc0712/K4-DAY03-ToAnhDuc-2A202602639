@@ -6,6 +6,7 @@ Hỗ trợ Native Tool Calling và chuyển đổi linh hoạt qua biến môi t
 import os
 import sys
 import json
+import re
 from typing import Dict, Any, List
 from dotenv import load_dotenv
 
@@ -30,27 +31,115 @@ class MockOfflineProvider(BaseLLMProvider):
     """Offline Mock Provider dùng để chạy thử mà không tốn API Key"""
     def __init__(self):
         self.model_name = "Offline-Mock-Model-2026"
+        self.call_count = 0
+        self._last_query = None
 
     def generate(self, prompt: str, system_prompt: str = "") -> str:
         return f"[Mock Chatbot Response]: Xin chào! Tôi đã nhận được câu hỏi '{prompt}'. (Chế độ Chatbot không có Tool tra cứu dữ liệu thời gian thực)."
 
     def generate_with_tools(self, prompt: str, tools_schema: List[Dict[str, Any]], system_prompt: str = "") -> Dict[str, Any]:
+        original_query = prompt.split("\n\nTool vừa gọi:", 1)[0].strip()
+        if self._last_query != original_query:
+            self.call_count = 0
+            self._last_query = original_query
+        self.call_count += 1
+
         prompt_lower = prompt.lower()
+        student_match = re.search(r"SV\d+", prompt, re.IGNORECASE)
+        student_id = student_match.group(0).upper() if student_match else None
+        datetime_match = re.search(
+            r"(\d{1,2}:\d{2})\s*(?:sáng\s*)?(?:ngày\s*)?(\d{2}/\d{2}/\d{4})",
+            prompt,
+            re.IGNORECASE
+        )
+        datetime_str = (
+            f"{datetime_match.group(1)} {datetime_match.group(2)}"
+            if datetime_match else None
+        )
+
+        if self.call_count >= 2:
+            if self.call_count == 2 and "tool vừa gọi: academic_query" in prompt_lower and (
+                "đặt lịch" in prompt_lower or "hẹn" in prompt_lower
+            ) and datetime_str:
+                return {
+                    "type": "tool_call",
+                    "tool_name": "schedule_appointment",
+                    "arguments": {
+                        "student_id": student_id,
+                        "datetime_str": datetime_str,
+                        "advisor_name": "PGS.TS Nguyễn Văn A"
+                    },
+                    "thought": f"Đã tra cứu cố vấn, tiếp tục đặt lịch cho {student_id} lúc {datetime_str}."
+                }
+
+            if student_id and "9999999" in student_id:
+                return {
+                    "type": "text",
+                    "content": (
+                        f"Không tìm thấy sinh viên {student_id} trong hệ thống. "
+                        "Vui lòng kiểm tra lại mã sinh viên."
+                    ),
+                    "thought": "Tool báo NOT_FOUND."
+                }
+
+            if "đặt lịch" in prompt_lower or "hẹn" in prompt_lower:
+                booking_datetime = datetime_str or "14:00 15/09/2026"
+                return {
+                    "type": "text",
+                    "content": (
+                        f"Đã đặt lịch hẹn cho {student_id} lúc {booking_datetime} "
+                        f"với PGS.TS Nguyễn Văn A. Mã booking: BK-{student_id}-99."
+                    ),
+                    "thought": "Đặt lịch thành công."
+                }
+
+            if student_id:
+                return {
+                    "type": "text",
+                    "content": (
+                        f"Sinh viên {student_id} - Nguyễn Văn An, lớp AI-K4, "
+                        "GPA 3.85, email an.nv@vinuni.edu.vn, "
+                        "cố vấn PGS.TS Nguyễn Văn A."
+                    ),
+                    "thought": "Đã tra cứu thành công."
+                }
+
+            return {
+                "type": "text",
+                "content": "Đã hoàn thành yêu cầu dựa trên kết quả từ Tool.",
+                "thought": "Đã có kết quả từ Tool, tổng hợp Final Answer."
+            }
         
         # Mô phỏng nhận diện intent gọi Tool
-        if "sv2026001" in prompt_lower and "đặt lịch" in prompt_lower:
-            return {
-                "type": "tool_call",
-                "tool_name": "schedule_appointment",
-                "arguments": {"student_id": "SV2026001", "datetime_str": "14:00 15/09/2026", "advisor_name": "PGS.TS Nguyễn Văn A"},
-                "thought": "Người dùng yêu cầu đặt lịch hẹn tư vấn cho sinh viên SV2026001. Tôi sẽ gọi tool schedule_appointment."
-            }
-        elif "sv2026001" in prompt_lower or "tra cứu" in prompt_lower:
+        if (
+            student_id
+            and "tra cứu" in prompt_lower
+            and ("đặt lịch" in prompt_lower or "hẹn" in prompt_lower)
+            and "tool vừa gọi:" not in prompt_lower
+        ):
             return {
                 "type": "tool_call",
                 "tool_name": "academic_query",
-                "arguments": {"student_id": "SV2026001"},
-                "thought": "Người dùng muốn tra cứu thông tin học vụ của sinh viên SV2026001. Tôi sẽ gọi tool academic_query."
+                "arguments": {"student_id": student_id},
+                "thought": f"Trước hết, tôi sẽ tra cứu cố vấn của sinh viên {student_id}."
+            }
+        elif student_id and ("đặt lịch" in prompt_lower or "hẹn" in prompt_lower) and datetime_str:
+            return {
+                "type": "tool_call",
+                "tool_name": "schedule_appointment",
+                "arguments": {
+                    "student_id": student_id,
+                    "datetime_str": datetime_str,
+                    "advisor_name": "PGS.TS Nguyễn Văn A"
+                },
+                "thought": f"Người dùng yêu cầu đặt lịch hẹn cho sinh viên {student_id} lúc {datetime_str}."
+            }
+        elif student_id and ("tra cứu" in prompt_lower or "thông tin" in prompt_lower):
+            return {
+                "type": "tool_call",
+                "tool_name": "academic_query",
+                "arguments": {"student_id": student_id},
+                "thought": f"Người dùng muốn tra cứu thông tin học vụ của sinh viên {student_id}."
             }
         else:
             return {
@@ -65,6 +154,7 @@ class GeminiProvider(BaseLLMProvider):
     def __init__(self, api_key: str = None, model: str = None):
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         self.model_name = model or os.getenv("LLM_MODEL") or "gemini-2.5-flash"
+        self._mock_provider = MockOfflineProvider()
 
     def generate(self, prompt: str, system_prompt: str = "") -> str:
         if not self.api_key or self.api_key == "your_gemini_api_key_here":
@@ -81,7 +171,7 @@ class GeminiProvider(BaseLLMProvider):
     def generate_with_tools(self, prompt: str, tools_schema: List[Dict[str, Any]], system_prompt: str = "") -> Dict[str, Any]:
         if not self.api_key or self.api_key == "your_gemini_api_key_here":
             print("ℹ️ [Gemini Provider]: Chưa tìm thấy GEMINI_API_KEY hợp lệ. Tự động chuyển sang Mock Offline.")
-            return MockOfflineProvider().generate_with_tools(prompt, tools_schema, system_prompt)
+            return self._mock_provider.generate_with_tools(prompt, tools_schema, system_prompt)
         
         try:
             from google import genai
@@ -132,7 +222,7 @@ class GeminiProvider(BaseLLMProvider):
 
         except Exception as e:
             print(f"⚠️ [Gemini API Warning]: Không thể kết nối live API ({str(e)}). Tự động fallback về Mock.")
-            return MockOfflineProvider().generate_with_tools(prompt, tools_schema, system_prompt)
+            return self._mock_provider.generate_with_tools(prompt, tools_schema, system_prompt)
 
 
 class OpenAIProvider(BaseLLMProvider):
