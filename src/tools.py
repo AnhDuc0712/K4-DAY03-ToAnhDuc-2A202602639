@@ -12,18 +12,26 @@ from typing import Dict, Any
 
 TOOLS_SCHEMA = [
     # Tool 1: Đã được định nghĩa mẫu sẵn cho Học viên tham khảo
-    {
-        "name": "academic_query",
-        "description": "Tra cứu hồ sơ và thông tin học vụ của sinh viên VinUni bằng mã sinh viên.",
+        {
+        "name": "schedule_appointment",
+        "description": "Đặt lịch hẹn tư vấn học vụ với Cố vấn học tập VinUni.",
         "parameters": {
             "type": "object",
             "properties": {
                 "student_id": {
                     "type": "string",
-                    "description": "Mã sinh viên cần tra cứu (ví dụ: 'SV2026001')"
+                    "description": "Mã sinh viên cần đặt lịch (ví dụ: 'SV2026001')"
+                },
+                "datetime_str": {
+                    "type": "string",
+                    "description": "Thời gian hẹn theo định dạng 'HH:MM DD/MM/YYYY' (ví dụ: '14:00 15/09/2026')"
+                },
+                "advisor_name": {
+                    "type": "string",
+                    "description": "Tên cố vấn học tập phụ trách (ví dụ: 'PGS.TS Nguyễn Văn A')"
                 }
             },
-            "required": ["student_id"]
+            "required": ["student_id", "datetime_str"]
         }
     },
     
